@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "commands": [
+    {
+      "name": "test-cmd",
+      "aliases": ["tc"],
+      "description": "A test command",
+      "tags": ["test"],
+      "steps": [{"run": "echo hello"}]
+    },
+    {
+      "name": "test-eval",
+      "description": "A test eval command",
+      "mode": "eval",
+      "steps": [{"run": "export TEST=1"}]
+    }
+  ]
+}

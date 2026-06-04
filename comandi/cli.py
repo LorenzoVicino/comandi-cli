@@ -44,7 +44,6 @@ def load_data(path=None):
             data = json.load(fh)
     except json.JSONDecodeError as exc:
         raise CliError("Invalid JSON in {}: {}".format(target, exc))
-
     if not isinstance(data, dict) or not isinstance(data.get("commands"), list):
         raise CliError("Invalid format in {}: missing 'commands' list".format(target))
     return data
@@ -98,7 +97,6 @@ def resolve_command(data, name):
             return command
         if needle in command_name.lower() or any(needle in item.lower() for item in aliases(command)):
             matches.append(command)
-
     if len(matches) == 1:
         return matches[0]
     if len(matches) > 1:
@@ -112,7 +110,7 @@ def step_command(step):
         return step
     if isinstance(step, dict) and isinstance(step.get("run"), str):
         return step["run"]
-    raise CliError("Invalid step: use a string or {\"run\": \"...\"}")
+    raise CliError("Invalid step: use a string or {\"run\": \"...\"}".format())
 
 
 def command_steps(command):
@@ -187,6 +185,75 @@ def _binary():
     return Path(sys.argv[0]).resolve() if sys.argv else Path("commands")
 
 
+def _is_wsl():
+    try:
+        return "microsoft" in Path("/proc/version").read_text().lower()
+    except Exception:
+        return False
+
+
+def _ask_run_action(command_name):
+    import questionary
+    choices = [
+        questionary.Choice(
+            title="Copy to clipboard    paste it anywhere you need",
+            value="copy",
+        ),
+        questionary.Choice(
+            title="Run in this terminal  execute here and now",
+            value="run",
+        ),
+        questionary.Choice(
+            title="Open new terminal    launch in a separate window",
+            value="terminal",
+        ),
+    ]
+    return questionary.select(
+        "How do you want to run '{}'?".format(command_name),
+        choices=choices,
+    ).ask()
+
+
+def open_in_terminal(script, name=""):
+    import stat
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False, prefix="commands_") as f:
+        f.write("#!/bin/bash\n")
+        if name:
+            f.write("echo '=== {} ==='\n".format(name.replace("'", "")))
+        f.write(script)
+        f.write('\necho\nread -rp "Press Enter to close..." _\n')
+        tmp = f.name
+    os.chmod(tmp, stat.S_IRWXU | stat.S_IRGRP | stat.S_IROTH)
+
+    if _is_wsl():
+        wt = shutil.which("wt.exe")
+        if wt:
+            subprocess.Popen([wt, "bash", tmp])
+            return True
+        try:
+            subprocess.Popen(["cmd.exe", "/c", "start", "bash", tmp])
+            return True
+        except OSError:
+            pass
+
+    terminals = [
+        ["gnome-terminal", "--", "bash", tmp],
+        ["xterm", "-e", "bash", tmp],
+        ["konsole", "-e", "bash {}".format(shlex.quote(tmp))],
+        ["xfce4-terminal", "-e", "bash {}".format(shlex.quote(tmp))],
+        ["mate-terminal", "--", "bash", tmp],
+        ["tilix", "-e", "bash {}".format(shlex.quote(tmp))],
+        ["terminator", "-e", "bash {}".format(shlex.quote(tmp))],
+    ]
+    for term in terminals:
+        if shutil.which(term[0]):
+            subprocess.Popen(term)
+            return True
+    return False
+
+
 def cmd_list(args):
     data = load_data()
     rows = []
@@ -215,7 +282,6 @@ def cmd_show(args):
     print("Name:        {}".format(command.get("name")))
     if aliases(command):
         print("Aliases:     {}".format(", ".join(aliases(command))))
-    print("Mode:        {}".format(command_mode(command)))
     if tags(command):
         print("Tags:        {}".format(", ".join(tags(command))))
     if command.get("description"):
@@ -247,14 +313,13 @@ def run_shell(command_line, cwd, env, quiet):
     return int(completed.returncode)
 
 
-def cmd_run(args):
-    command = resolve_command(load_data(), args.name)
-    if command_mode(command) == "eval" and not args.subshell:
+def _execute_command(command, quiet=False, subshell=False):
+    if command_mode(command) == "eval" and not subshell:
         print(
             "This command must modify the current shell.\n"
             "Use: eval \"$({} print {})\"\n"
             "Or enable the wrapper and use: c run {}".format(
-                _binary(), shlex.quote(args.name), args.name
+                _binary(), shlex.quote(str(command.get("name", ""))), command.get("name", "")
             ),
             file=sys.stderr,
         )
@@ -269,10 +334,48 @@ def cmd_run(args):
     cwd_value = str(Path(str(cwd)).expanduser()) if cwd else None
 
     for step in command_steps(command):
-        code = run_shell(step, cwd_value, env, args.quiet)
+        code = run_shell(step, cwd_value, env, quiet)
         if code != 0:
             return code
     return 0
+
+
+def _dispatch_action(command, action, quiet=False):
+    if action == "copy":
+        text = render_script(command)
+        copied_with = copy_to_clipboard(text)
+        if not copied_with:
+            print("Clipboard not available. Copy this:")
+            print(text)
+            return 1
+        print("Copied: {}".format(command.get("name")))
+        return 0
+
+    if action == "terminal":
+        if not open_in_terminal(render_script(command), command.get("name", "")):
+            raise CliError(
+                "No terminal emulator found. "
+                "Install gnome-terminal, xterm, or konsole."
+            )
+        return 0
+
+    return _execute_command(command, quiet=quiet)
+
+
+def cmd_run(args):
+    command = resolve_command(load_data(), args.name)
+
+    action = getattr(args, "action", None)
+    if action is None and sys.stdin.isatty() and sys.stdout.isatty():
+        action = _ask_run_action(command.get("name", args.name))
+        if action is None:
+            print("Cancelled.")
+            return 1
+
+    if action is not None:
+        return _dispatch_action(command, action, quiet=getattr(args, "quiet", False))
+
+    return _execute_command(command, quiet=args.quiet, subshell=args.subshell)
 
 
 def clipboard_commands():
@@ -365,9 +468,8 @@ def run_fzf_picker(data, initial_query):
     if not fzf:
         raise CliError(
             "fzf not found. Install fzf to use the TUI picker "
-            "or use 'commands list' and 'commands copy <name>'."
+            "or use 'commands list' and 'commands run <name>'."
         )
-
     picker_lines = command_picker_lines(data, "")
     if not picker_lines:
         raise CliError("No saved commands")
@@ -380,7 +482,7 @@ def run_fzf_picker(data, initial_query):
         "--border",
         "--cycle",
         "--prompt=commands> ",
-        "--header=Enter copies to clipboard | type to search | Esc cancels",
+        "--header=Enter to select | type to search | Esc cancels",
         "--delimiter=\t",
         "--with-nth=2..",
         "--preview",
@@ -414,7 +516,6 @@ def cmd_preview(args):
         command = commands(data)[int(args.index)]
     except (ValueError, IndexError):
         raise CliError("Invalid preview index: {}".format(args.index))
-
     print(command.get("name", ""))
     if command.get("description"):
         print(command.get("description"))
@@ -437,14 +538,12 @@ def cmd_pick(args):
         print("Cancelled.")
         return 1
 
-    text = render_script(selected)
-    copied_with = copy_to_clipboard(text)
-    if not copied_with:
-        print("Clipboard not available. Copy this:")
-        print(text)
+    action = _ask_run_action(selected.get("name", ""))
+    if action is None:
+        print("Cancelled.")
         return 1
-    print("Copied: {}".format(selected.get("name")))
-    return 0
+
+    return _dispatch_action(selected, action)
 
 
 def parse_key_value(items):
@@ -476,44 +575,14 @@ def cmd_add_wizard():
     if description is None:
         raise KeyboardInterrupt
 
-    tags_raw = questionary.text("Tags (comma-separated, optional):").ask()
-    if tags_raw is None:
-        raise KeyboardInterrupt
-    tags_list = [t.strip() for t in tags_raw.split(",") if t.strip()]
-
-    aliases_raw = questionary.text("Aliases (comma-separated, optional):").ask()
-    if aliases_raw is None:
-        raise KeyboardInterrupt
-    aliases_list = [a.strip() for a in aliases_raw.split(",") if a.strip()]
-
-    mode_val = questionary.select("Mode:", choices=["exec", "eval"]).ask()
-    if mode_val is None:
-        raise KeyboardInterrupt
-
-    cwd = questionary.text("Working directory (optional):").ask()
-    if cwd is None:
-        raise KeyboardInterrupt
-
-    env_raw = []
-    print()
-    while True:
-        val = questionary.text(
-            "Environment variable KEY=VALUE (blank to finish):"
-            if not env_raw
-            else "Add another env var (blank to finish):"
-        ).ask()
-        if val is None:
-            raise KeyboardInterrupt
-        if not val.strip():
-            break
-        env_raw.append(val.strip())
-
     steps = []
-    print()
     while True:
-        val = questionary.text(
-            "Shell command — step {} (blank to finish):".format(len(steps) + 1)
-        ).ask()
+        label = (
+            "Shell command (step 1):"
+            if not steps
+            else "Step {} (blank to finish):".format(len(steps) + 1)
+        )
+        val = questionary.text(label).ask()
         if val is None:
             raise KeyboardInterrupt
         if not val.strip():
@@ -523,21 +592,63 @@ def cmd_add_wizard():
             break
         steps.append(val.strip())
 
-    print()
-    notes = questionary.text("Notes (optional):").ask()
-    if notes is None:
+    advanced = questionary.confirm(
+        "Add advanced options? (tags, aliases, env vars, working dir, notes)",
+        default=False,
+    ).ask()
+    if advanced is None:
         raise KeyboardInterrupt
+
+    tags_list = []
+    aliases_list = []
+    cwd = None
+    env_raw = []
+    notes = None
+
+    if advanced:
+        tags_raw = questionary.text("Tags (comma-separated, optional):").ask()
+        if tags_raw is None:
+            raise KeyboardInterrupt
+        tags_list = [t.strip() for t in tags_raw.split(",") if t.strip()]
+
+        aliases_raw = questionary.text("Aliases (comma-separated, optional):").ask()
+        if aliases_raw is None:
+            raise KeyboardInterrupt
+        aliases_list = [a.strip() for a in aliases_raw.split(",") if a.strip()]
+
+        cwd_val = questionary.text("Working directory (optional):").ask()
+        if cwd_val is None:
+            raise KeyboardInterrupt
+        cwd = cwd_val.strip() or None
+
+        while True:
+            label = (
+                "Env var KEY=VALUE (blank to finish):"
+                if not env_raw
+                else "Another env var (blank to finish):"
+            )
+            val = questionary.text(label).ask()
+            if val is None:
+                raise KeyboardInterrupt
+            if not val.strip():
+                break
+            env_raw.append(val.strip())
+
+        notes_val = questionary.text("Notes (optional):").ask()
+        if notes_val is None:
+            raise KeyboardInterrupt
+        notes = notes_val.strip() or None
 
     return argparse.Namespace(
         name=name,
         description=description or "",
         tag=tags_list or None,
         alias=aliases_list or None,
-        mode=mode_val,
-        cwd=cwd.strip() or None,
+        mode="exec",
+        cwd=cwd,
         env=env_raw or None,
         cmd=steps,
-        notes=notes.strip() or None,
+        notes=notes,
     )
 
 
@@ -564,11 +675,12 @@ def cmd_add(args):
     new_command = {
         "name": args.name,
         "description": args.description or "",
-        "mode": args.mode,
         "tags": args.tag or [],
         "aliases": args.alias or [],
         "steps": [{"run": item} for item in args.cmd],
     }
+    if getattr(args, "mode", "exec") == "eval":
+        new_command["mode"] = "eval"
     env = parse_key_value(args.env or [])
     if env:
         new_command["env"] = env
@@ -665,7 +777,7 @@ def cmd_shell_init(args):
       if [ "$__mode" = "eval" ]; then
         eval "$(command "$__comandi_bin" print "$1")"
       else
-        command "$__comandi_bin" run "$@"
+        command "$__comandi_bin" run --action run "$@"
       fi
       ;;
     use|eval)
@@ -708,10 +820,12 @@ def build_parser():
     run_p = sub.add_parser("run", help="run a saved command")
     run_p.add_argument("name")
     run_p.add_argument("--quiet", "-q", action="store_true", help="suppress command echo before running")
+    run_p.add_argument("--subshell", action="store_true", help="allow eval-mode commands in a subshell")
     run_p.add_argument(
-        "--subshell",
-        action="store_true",
-        help="allow running eval-mode commands in a subshell",
+        "--action",
+        choices=["copy", "run", "terminal"],
+        default=None,
+        help="how to run: copy to clipboard, run here, or open new terminal",
     )
     run_p.set_defaults(func=cmd_run)
 
@@ -719,7 +833,7 @@ def build_parser():
     copy_p.add_argument("name")
     copy_p.set_defaults(func=cmd_copy)
 
-    pick_p = sub.add_parser("pick", aliases=["ui"], help="interactive TUI picker: select and copy")
+    pick_p = sub.add_parser("pick", aliases=["ui"], help="interactive TUI picker")
     pick_p.add_argument("query", nargs="?", help="initial search text")
     pick_p.set_defaults(func=cmd_pick)
 
@@ -734,7 +848,7 @@ def build_parser():
     add_p.add_argument("--tag", action="append", help="tag; repeatable")
     add_p.add_argument("--env", action="append", help="env variable KEY=VALUE; repeatable")
     add_p.add_argument("--cwd", help="working directory")
-    add_p.add_argument("--mode", choices=["exec", "eval"], default="exec")
+    add_p.add_argument("--mode", choices=["exec", "eval"], default="exec", help=argparse.SUPPRESS)
     add_p.add_argument("--notes", help="free-form notes")
     add_p.set_defaults(func=cmd_add)
 
