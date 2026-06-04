@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "comandi-cli"
+version = "0.1.0"
+description = "Personal CLI to save and run frequently used shell commands"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.8"
+keywords = ["cli", "shell", "commands", "productivity", "fzf", "snippets"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Environment :: Console",
+    "Topic :: Utilities",
+    "License :: OSI Approved :: MIT License",
+]
+
+[project.scripts]
+commands = "comandi.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/your-username/comandi-cli"
+Issues = "https://github.com/your-username/comandi-cli/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["comandi*"]
+
+[tool.setuptools.package-data]
+comandi = ["data/commands.json"]

@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "commands": [
+    {
+      "name": "ssh-agent",
+      "aliases": [
+        "ssh",
+        "agent"
+      ],
+      "description": "Start ssh-agent in current shell and add ~/.ssh/id_rsa",
+      "mode": "eval",
+      "tags": [
+        "ssh",
+        "setup"
+      ],
+      "notes": "Use: eval \"$(comandi print ssh-agent)\" or enable the wrapper and use: c run ssh-agent",
+      "steps": [
+        {
+          "run": "eval \"$(ssh-agent -s)\""
+        },
+        {
+          "run": "ssh-add ~/.ssh/id_rsa"
+        }
+      ]
+    },
+    {
+      "name": "git-clean",
+      "aliases": [
+        "gc"
+      ],
+      "description": "Remove all untracked files and directories from working tree",
+      "mode": "exec",
+      "tags": [
+        "git",
+        "cleanup"
+      ],
+      "steps": [
+        {
+          "run": "git clean -fd"
+        }
+      ]
+    }
+  ]
+}
