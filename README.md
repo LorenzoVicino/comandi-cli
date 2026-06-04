@@ -1,4 +1,4 @@
-# comandi-cli
+# commands-cli
 
 Personal CLI for saving and running your frequently used shell commands.
 
@@ -10,7 +10,7 @@ The interactive picker uses [`fzf`](https://github.com/junegunn/fzf).
 ## Install
 
 ```bash
-pip install comandi-cli
+pip install commands-cli
 eval "$(commands shell-init)"
 ```
 
@@ -23,8 +23,8 @@ eval "$(commands shell-init)"
 ### Development install
 
 ```bash
-git clone https://github.com/your-username/comandi-cli
-cd comandi-cli
+git clone https://github.com/your-username/commands-cli
+cd commands-cli
 pip install -e .
 eval "$(commands shell-init)"
 ```
