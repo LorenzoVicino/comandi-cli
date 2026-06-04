@@ -197,7 +197,10 @@ def cmd_list(args):
         rows.append((name, alias_text, description))
 
     if not rows:
-        print("No commands found.")
+        if not args.query and not args.tag:
+            print("No commands saved yet. Run 'commands add' to add your first command.")
+        else:
+            print("No commands found.")
         return 1
 
     name_width = max(len(row[0]) for row in rows)
@@ -456,78 +459,85 @@ def parse_key_value(items):
     return parsed
 
 
-def _prompt(label, default=None, required=False):
-    suffix = " [{}]".format(default) if default is not None else ""
-    while True:
-        try:
-            value = input("{}{}> ".format(label, suffix)).strip()
-        except EOFError:
-            raise KeyboardInterrupt
-        if not value and default is not None:
-            return default
-        if value:
-            return value
-        if not required:
-            return ""
-        print("  (required)")
-
-
-def _prompt_list(label, hint="comma-separated, optional"):
-    try:
-        raw = input("{} ({}): ".format(label, hint)).strip()
-    except EOFError:
-        raise KeyboardInterrupt
-    if not raw:
-        return []
-    return [item.strip() for item in raw.split(",") if item.strip()]
-
-
-def _prompt_multiline(label):
-    print("{}  (one per line — blank line to finish):".format(label))
-    items = []
-    while True:
-        try:
-            line = input("  > ").strip()
-        except EOFError:
-            break
-        if not line:
-            break
-        items.append(line)
-    return items
-
-
 def cmd_add_wizard():
-    print("\nInteractive command builder — Ctrl+C to cancel\n")
+    import questionary
 
-    name = _prompt("Name", required=True)
-    description = _prompt("Description (optional)")
-    tags_list = _prompt_list("Tags", "comma-separated, optional")
-    aliases_list = _prompt_list("Aliases", "comma-separated, optional")
+    print()
 
-    mode_val = _prompt("Mode [exec/eval]", default="exec")
-    while mode_val not in ("exec", "eval"):
-        print("  Must be 'exec' or 'eval'.")
-        mode_val = _prompt("Mode [exec/eval]", default="exec")
+    name = questionary.text(
+        "Command name:",
+        validate=lambda v: bool(v.strip()) or "Name is required",
+    ).ask()
+    if name is None:
+        raise KeyboardInterrupt
+    name = name.strip()
 
-    cwd = _prompt("Working directory (optional)")
-    env_raw = _prompt_multiline("Environment variables (KEY=VALUE)")
-    steps = _prompt_multiline("Steps (shell commands)")
+    description = questionary.text("Description (optional):").ask()
+    if description is None:
+        raise KeyboardInterrupt
 
-    if not steps:
-        raise CliError("At least one step is required.")
+    tags_raw = questionary.text("Tags (comma-separated, optional):").ask()
+    if tags_raw is None:
+        raise KeyboardInterrupt
+    tags_list = [t.strip() for t in tags_raw.split(",") if t.strip()]
 
-    notes = _prompt("Notes (optional)")
+    aliases_raw = questionary.text("Aliases (comma-separated, optional):").ask()
+    if aliases_raw is None:
+        raise KeyboardInterrupt
+    aliases_list = [a.strip() for a in aliases_raw.split(",") if a.strip()]
+
+    mode_val = questionary.select("Mode:", choices=["exec", "eval"]).ask()
+    if mode_val is None:
+        raise KeyboardInterrupt
+
+    cwd = questionary.text("Working directory (optional):").ask()
+    if cwd is None:
+        raise KeyboardInterrupt
+
+    env_raw = []
+    print()
+    while True:
+        val = questionary.text(
+            "Environment variable KEY=VALUE (blank to finish):"
+            if not env_raw
+            else "Add another env var (blank to finish):"
+        ).ask()
+        if val is None:
+            raise KeyboardInterrupt
+        if not val.strip():
+            break
+        env_raw.append(val.strip())
+
+    steps = []
+    print()
+    while True:
+        val = questionary.text(
+            "Shell command — step {} (blank to finish):".format(len(steps) + 1)
+        ).ask()
+        if val is None:
+            raise KeyboardInterrupt
+        if not val.strip():
+            if not steps:
+                print("  At least one step is required.")
+                continue
+            break
+        steps.append(val.strip())
+
+    print()
+    notes = questionary.text("Notes (optional):").ask()
+    if notes is None:
+        raise KeyboardInterrupt
 
     return argparse.Namespace(
         name=name,
-        description=description,
+        description=description or "",
         tag=tags_list or None,
         alias=aliases_list or None,
         mode=mode_val,
-        cwd=cwd or None,
+        cwd=cwd.strip() or None,
         env=env_raw or None,
         cmd=steps,
-        notes=notes or None,
+        notes=notes.strip() or None,
     )
 
 
@@ -765,6 +775,12 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if not hasattr(args, "func"):
         if sys.stdin.isatty() and sys.stdout.isatty():
+            data = load_data()
+            if not commands(data):
+                print("Welcome to commands-cli!")
+                print("No commands saved yet.\n")
+                print("Run 'commands add' to add your first command.")
+                return 0
             return cmd_pick(argparse.Namespace(query=None))
         return cmd_list(argparse.Namespace(query=None, tag=None))
     try:
