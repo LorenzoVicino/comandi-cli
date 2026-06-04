@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "comandi-cli"
+name = "commands-cli"
 version = "0.1.0"
 description = "Personal CLI to save and run frequently used shell commands"
 readme = "README.md"
@@ -22,8 +22,8 @@ classifiers = [
 commands = "comandi.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/your-username/comandi-cli"
-Issues = "https://github.com/your-username/comandi-cli/issues"
+Homepage = "https://github.com/your-username/commands-cli"
+Issues = "https://github.com/your-username/commands-cli/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
