@@ -3,6 +3,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -13,6 +14,8 @@ from pathlib import Path
 APP_NAME = "commands"
 BUNDLED_FILE = Path(__file__).parent / "data" / "commands.json"
 DEFAULT_USER_FILE = Path.home() / ".config" / APP_NAME / "commands.json"
+PARAM_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
+KEYWORD_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class CliError(Exception):
@@ -46,6 +49,7 @@ def load_data(path=None):
         raise CliError("Invalid JSON in {}: {}".format(target, exc))
     if not isinstance(data, dict) or not isinstance(data.get("commands"), list):
         raise CliError("Invalid format in {}: missing 'commands' list".format(target))
+    validate_data(data, target)
     return data
 
 
@@ -73,11 +77,173 @@ def commands(data):
     return data.get("commands", [])
 
 
+def validate_data(data, path):
+    keyword_owners = {}
+    for command in commands(data):
+        if not isinstance(command, dict):
+            raise CliError("Invalid format in {}: each command must be an object".format(path))
+        command_params(command)
+        for keyword in keywords(command):
+            owner = keyword_owners.get(keyword)
+            if owner and owner != command_label(command):
+                raise CliError(
+                    "Duplicate keyword '{}': used by '{}' and '{}'".format(
+                        keyword, owner, command_label(command)
+                    )
+                )
+            keyword_owners[keyword] = command_label(command)
+
+
+def require_command_name(value):
+    name = str(value or "").strip()
+    if not name:
+        raise CliError("Command name is required")
+    return name
+
+
+def command_label(command):
+    return str(command.get("name") or "<unnamed>")
+
+
+def _keyword_error(command, message, keyword=None):
+    label = command_label(command)
+    if keyword:
+        return CliError("Invalid keyword for '{}.{}': {}".format(label, keyword, message))
+    return CliError("Invalid keywords for '{}': {}".format(label, message))
+
+
+def require_keyword(command, value):
+    keyword = str(value or "").strip()
+    if not keyword:
+        raise _keyword_error(command, "keyword is required")
+    if not KEYWORD_NAME_RE.match(keyword):
+        raise _keyword_error(command, "keyword must match {}".format(KEYWORD_NAME_RE.pattern), keyword)
+    return keyword
+
+
+def _param_error(command, message, param_name=None):
+    label = command_label(command)
+    if param_name:
+        return CliError("Invalid params for '{}.{}': {}".format(label, param_name, message))
+    return CliError("Invalid params for '{}': {}".format(label, message))
+
+
+def require_param_name(command, value):
+    name = str(value or "").strip()
+    if not name:
+        raise _param_error(command, "name is required")
+    if not PARAM_NAME_RE.match(name):
+        raise _param_error(command, "name must match {}".format(PARAM_NAME_RE.pattern), name)
+    return name
+
+
+def param_value(command, param_name, field, value):
+    if value is None or isinstance(value, (list, dict)):
+        raise _param_error(command, "{} must be a scalar value".format(field), param_name)
+    return str(value)
+
+
+def param_items(raw_params):
+    if raw_params is None:
+        return []
+    if isinstance(raw_params, dict):
+        items = []
+        for name, value in raw_params.items():
+            if isinstance(value, dict):
+                item = dict(value)
+                item.setdefault("name", name)
+            else:
+                item = {"name": name, "default": value, "required": False}
+            items.append(item)
+        return items
+    if isinstance(raw_params, list):
+        return raw_params
+    return None
+
+
+def command_params(command):
+    items = param_items(command.get("params"))
+    if items is None:
+        raise _param_error(command, "use a list or object")
+
+    seen = set()
+    normalized = []
+    for item in items:
+        if isinstance(item, str):
+            raw_param = {"name": item, "required": True}
+        elif isinstance(item, dict):
+            raw_param = dict(item)
+        else:
+            raise _param_error(command, "each param must be a string or object")
+
+        name = require_param_name(command, raw_param.get("name"))
+        if name in seen:
+            raise _param_error(command, "duplicate param name", name)
+        seen.add(name)
+
+        has_default = "default" in raw_param
+        default = None
+        if has_default:
+            default = param_value(command, name, "default", raw_param["default"])
+
+        if "required" in raw_param:
+            required = raw_param["required"]
+            if not isinstance(required, bool):
+                raise _param_error(command, "required must be true or false", name)
+        else:
+            required = not has_default
+
+        secret = raw_param.get("secret", False)
+        if not isinstance(secret, bool):
+            raise _param_error(command, "secret must be true or false", name)
+
+        choices = raw_param.get("choices")
+        if choices is not None:
+            if not isinstance(choices, list) or not choices:
+                raise _param_error(command, "choices must be a non-empty list", name)
+            choices = [param_value(command, name, "choices", choice) for choice in choices]
+            if len(set(choices)) != len(choices):
+                raise _param_error(command, "choices must not contain duplicates", name)
+            if has_default and default not in choices:
+                raise _param_error(command, "default must be one of choices", name)
+
+        normalized_param = {
+            "name": name,
+            "required": required,
+            "secret": secret,
+        }
+        if has_default:
+            normalized_param["default"] = default
+        if choices is not None:
+            normalized_param["choices"] = choices
+        normalized.append(normalized_param)
+
+    return normalized
+
+
 def aliases(command):
     values = command.get("aliases", [])
     if isinstance(values, list):
         return [str(v) for v in values]
     return []
+
+
+def keywords(command):
+    values = command.get("keywords", [])
+    if values is None:
+        return []
+    if not isinstance(values, list):
+        raise _keyword_error(command, "use a list")
+
+    result = []
+    seen = set()
+    for value in values:
+        keyword = require_keyword(command, value)
+        if keyword in seen:
+            raise _keyword_error(command, "duplicate keyword", keyword)
+        seen.add(keyword)
+        result.append(keyword)
+    return result
 
 
 def tags(command):
@@ -88,14 +254,15 @@ def tags(command):
 
 
 def resolve_command(data, name):
+    name = require_command_name(name)
     needle = name.lower()
     matches = []
     for command in commands(data):
         command_name = str(command.get("name", ""))
-        all_names = [command_name] + aliases(command)
+        all_names = [command_name] + aliases(command) + keywords(command)
         if any(item.lower() == needle for item in all_names):
             return command
-        if needle in command_name.lower() or any(needle in item.lower() for item in aliases(command)):
+        if needle in command_name.lower() or any(needle in item.lower() for item in aliases(command) + keywords(command)):
             matches.append(command)
     if len(matches) == 1:
         return matches[0]
@@ -155,10 +322,22 @@ def command_mode(command):
     return mode
 
 
+def param_summary(param):
+    parts = ["required" if param["required"] else "optional"]
+    if "default" in param:
+        default = "***" if param["secret"] else param["default"]
+        parts.append("default={}".format(default))
+    if param["secret"]:
+        parts.append("secret")
+    if param.get("choices"):
+        parts.append("choices={}".format(", ".join(param["choices"])))
+    return "{}: {}".format(param["name"], ", ".join(parts))
+
+
 def command_haystack(command):
     name = str(command.get("name", ""))
     description = str(command.get("description", ""))
-    return " ".join([name, description] + aliases(command) + tags(command)).lower()
+    return " ".join([name, description] + aliases(command) + keywords(command) + tags(command)).lower()
 
 
 def filtered_commands(data, query="", tag=""):
@@ -261,7 +440,8 @@ def cmd_list(args):
         name = str(command.get("name", ""))
         description = str(command.get("description", ""))
         alias_text = ", ".join(aliases(command))
-        rows.append((name, alias_text, description))
+        keyword_text = ", ".join(keywords(command))
+        rows.append((name, alias_text, keyword_text, description))
 
     if not rows:
         if not args.query and not args.tag:
@@ -271,8 +451,13 @@ def cmd_list(args):
         return 1
 
     name_width = max(len(row[0]) for row in rows)
-    for name, alias_text, description in rows:
-        suffix = " ({})".format(alias_text) if alias_text else ""
+    for name, alias_text, keyword_text, description in rows:
+        suffix_parts = []
+        if alias_text:
+            suffix_parts.append("aliases: {}".format(alias_text))
+        if keyword_text:
+            suffix_parts.append("keywords: {}".format(keyword_text))
+        suffix = " ({})".format(" | ".join(suffix_parts)) if suffix_parts else ""
         print("{:<{width}}  {}{}".format(name, description, suffix, width=name_width))
     return 0
 
@@ -282,8 +467,15 @@ def cmd_show(args):
     print("Name:        {}".format(command.get("name")))
     if aliases(command):
         print("Aliases:     {}".format(", ".join(aliases(command))))
+    if keywords(command):
+        print("Keywords:    {}".format(", ".join(keywords(command))))
     if tags(command):
         print("Tags:        {}".format(", ".join(tags(command))))
+    params = command_params(command)
+    if params:
+        print("Params:")
+        for param in params:
+            print("  {}".format(param_summary(param)))
     if command.get("description"):
         print("Description: {}".format(command.get("description")))
     if command.get("notes"):
@@ -440,6 +632,8 @@ def command_summary(command):
         parts.append(description)
     if aliases(command):
         parts.append("aliases: {}".format(", ".join(aliases(command))))
+    if keywords(command):
+        parts.append("keywords: {}".format(", ".join(keywords(command))))
     if tags(command):
         parts.append("tags: {}".format(", ".join(tags(command))))
     return " | ".join(parts)
@@ -521,8 +715,15 @@ def cmd_preview(args):
         print(command.get("description"))
     if aliases(command):
         print("Aliases: {}".format(", ".join(aliases(command))))
+    if keywords(command):
+        print("Keywords: {}".format(", ".join(keywords(command))))
     if tags(command):
         print("Tags: {}".format(", ".join(tags(command))))
+    params = command_params(command)
+    if params:
+        print("Params:")
+        for param in params:
+            print("  {}".format(param_summary(param)))
     print()
     print(render_script(command))
     return 0
@@ -593,7 +794,7 @@ def cmd_add_wizard():
         steps.append(val.strip())
 
     advanced = questionary.confirm(
-        "Add advanced options? (tags, aliases, env vars, working dir, notes)",
+        "Add advanced options? (tags, aliases, keywords, env vars, working dir, notes)",
         default=False,
     ).ask()
     if advanced is None:
@@ -601,6 +802,7 @@ def cmd_add_wizard():
 
     tags_list = []
     aliases_list = []
+    keywords_list = []
     cwd = None
     env_raw = []
     notes = None
@@ -615,6 +817,11 @@ def cmd_add_wizard():
         if aliases_raw is None:
             raise KeyboardInterrupt
         aliases_list = [a.strip() for a in aliases_raw.split(",") if a.strip()]
+
+        keywords_raw = questionary.text("Keywords (comma-separated, optional):").ask()
+        if keywords_raw is None:
+            raise KeyboardInterrupt
+        keywords_list = [k.strip() for k in keywords_raw.split(",") if k.strip()]
 
         cwd_val = questionary.text("Working directory (optional):").ask()
         if cwd_val is None:
@@ -644,6 +851,7 @@ def cmd_add_wizard():
         description=description or "",
         tag=tags_list or None,
         alias=aliases_list or None,
+        keyword=keywords_list or None,
         mode="exec",
         cwd=cwd,
         env=env_raw or None,
@@ -662,6 +870,7 @@ def cmd_add(args):
             print("\nCancelled.")
             return 1
 
+    args.name = require_command_name(args.name)
     target = ensure_user_config()
     data = load_data(target)
 
@@ -679,6 +888,8 @@ def cmd_add(args):
         "aliases": args.alias or [],
         "steps": [{"run": item} for item in args.cmd],
     }
+    if args.keyword:
+        new_command["keywords"] = args.keyword
     if getattr(args, "mode", "exec") == "eval":
         new_command["mode"] = "eval"
     env = parse_key_value(args.env or [])
@@ -690,6 +901,7 @@ def cmd_add(args):
         new_command["notes"] = args.notes
 
     data.setdefault("commands", []).append(new_command)
+    validate_data(data, target)
     save_data(data, target)
     print("Added '{}' to {}".format(args.name, target))
     return 0
@@ -710,6 +922,52 @@ def cmd_remove(args):
     data["commands"] = [c for c in commands(data) if c.get("name") != name]
     save_data(data, target)
     print("Removed '{}'".format(name))
+    return 0
+
+
+def cmd_keywords(args):
+    target = ensure_user_config()
+    data = load_data(target)
+    command = resolve_command(data, args.name)
+    name = command.get("name")
+    current = keywords(command)
+
+    changed = False
+    if args.clear:
+        current = []
+        changed = True
+
+    if args.set is not None:
+        current = []
+        for keyword in args.set:
+            if keyword not in current:
+                current.append(keyword)
+        changed = True
+
+    for keyword in args.add or []:
+        if keyword not in current:
+            current.append(keyword)
+            changed = True
+
+    for keyword in args.remove or []:
+        if keyword in current:
+            current.remove(keyword)
+            changed = True
+
+    if changed:
+        if current:
+            command["keywords"] = current
+        else:
+            command.pop("keywords", None)
+        validate_data(data, target)
+        save_data(data, target)
+
+    if current:
+        print("{}: {}".format(name, ", ".join(current)))
+    else:
+        print("{}: no keywords".format(name))
+    if changed:
+        print("Run 'eval \"$(commands shell-init)\"' to refresh shell shortcuts.")
     return 0
 
 
@@ -754,6 +1012,36 @@ def cmd_path(args):
     return 0
 
 
+def shell_shortcut_function(keyword, command_name, binary):
+    command_ref = shlex.quote(str(command_name))
+    return """{keyword}() {{
+  local __comandi_bin={binary}
+  local __mode
+  __mode="$(command "$__comandi_bin" mode {command_ref} 2>/dev/null)" || return $?
+  if [ "$__mode" = "eval" ]; then
+    eval "$(command "$__comandi_bin" print {command_ref})"
+  else
+    command "$__comandi_bin" run {command_ref} "$@"
+  fi
+}}""".format(keyword=keyword, binary=binary, command_ref=command_ref)
+
+
+def shell_shortcuts(data, wrapper_name, binary):
+    lines = []
+    reserved = {APP_NAME, wrapper_name}
+    for command in commands(data):
+        command_name = command.get("name", "")
+        for keyword in keywords(command):
+            if keyword in reserved:
+                raise CliError(
+                    "Keyword '{}' conflicts with a generated shell function name".format(keyword)
+                )
+            lines.append(shell_shortcut_function(keyword, command_name, binary))
+    if not lines:
+        return ""
+    return "\n\n# commands keyword shortcuts\n" + "\n\n".join(lines)
+
+
 def cmd_shell_init(args):
     function_name = args.name
     binary = shlex.quote(str(_binary()))
@@ -789,7 +1077,9 @@ def cmd_shell_init(args):
       ;;
   esac
 }}"""
-    print(template.format(function_name=function_name, binary=binary))
+    script = template.format(function_name=function_name, binary=binary)
+    script += shell_shortcuts(load_data(), function_name, binary)
+    print(script)
     return 0
 
 
@@ -845,6 +1135,7 @@ def build_parser():
     add_p.add_argument("--cmd", action="append", default=None, help="shell step to save; repeatable")
     add_p.add_argument("--desc", dest="description", default="", help="short description")
     add_p.add_argument("--alias", action="append", help="alias; repeatable")
+    add_p.add_argument("--keyword", action="append", help="shell shortcut keyword; repeatable")
     add_p.add_argument("--tag", action="append", help="tag; repeatable")
     add_p.add_argument("--env", action="append", help="env variable KEY=VALUE; repeatable")
     add_p.add_argument("--cwd", help="working directory")
@@ -856,6 +1147,14 @@ def build_parser():
     remove_p.add_argument("name")
     remove_p.add_argument("--yes", "-y", action="store_true", help="skip confirmation prompt")
     remove_p.set_defaults(func=cmd_remove)
+
+    keywords_p = sub.add_parser("keywords", help="show or edit shell shortcut keywords")
+    keywords_p.add_argument("name")
+    keywords_p.add_argument("--add", action="append", help="add a shell shortcut keyword; repeatable")
+    keywords_p.add_argument("--remove", action="append", help="remove a shell shortcut keyword; repeatable")
+    keywords_p.add_argument("--set", action="append", help="replace keywords with this value; repeatable")
+    keywords_p.add_argument("--clear", action="store_true", help="remove all shell shortcut keywords")
+    keywords_p.set_defaults(func=cmd_keywords)
 
     edit_p = sub.add_parser("edit", help="open the commands file in $EDITOR")
     edit_p.add_argument("name", help="command name (used to verify file is still valid after edit)")

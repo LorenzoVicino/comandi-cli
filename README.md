@@ -36,6 +36,33 @@ Or without pip:
 eval "$(commands shell-init)"
 ```
 
+## Update
+
+If installed from PyPI:
+
+```bash
+pip install --upgrade commands-cli
+eval "$(commands shell-init)"
+```
+
+If installed from a Git checkout:
+
+```bash
+cd /path/to/commands-cli
+git pull
+pip install -e .
+eval "$(commands shell-init)"
+```
+
+If installed with `./install.sh`, update the checkout and run the installer again:
+
+```bash
+cd /path/to/commands-cli
+git pull
+./install.sh
+eval "$(commands shell-init)"
+```
+
 ## Quick start
 
 ```bash
@@ -51,6 +78,7 @@ With the shell wrapper:
 ```bash
 c                # open picker
 c run ssh-agent  # run — uses eval automatically if mode=eval
+comando1         # run a saved command through a keyword shortcut
 ```
 
 ## Adding commands
@@ -62,27 +90,21 @@ commands add
 ```
 
 ```
-Interactive command builder — Ctrl+C to cancel
-
-Name> my-deploy
-Description (optional)> Deploy app to staging
+Command name: my-deploy
+Description (optional): Deploy app to staging
+Shell command (step 1): npm run build
+Step 2 (blank to finish): aws s3 sync dist/ s3://my-bucket/
+Step 3 (blank to finish):
+Add advanced options? (tags, aliases, keywords, env vars, working dir, notes) Yes
 Tags (comma-separated, optional): aws,deploy
 Aliases (comma-separated, optional): deploy
-Mode [exec/eval] [exec]> exec
-Working directory (optional)>
+Keywords (comma-separated, optional): deploy_staging
+Working directory (optional):
+Env var KEY=VALUE (blank to finish): AWS_PROFILE=staging
+Another env var (blank to finish):
+Notes (optional):
 
-Environment variables (KEY=VALUE)  (one per line — blank line to finish):
-  > AWS_PROFILE=staging
-  >
-
-Steps (shell commands)  (one per line — blank line to finish):
-  > npm run build
-  > aws s3 sync dist/ s3://my-bucket/
-  >
-
-Notes (optional)>
-
-Added 'my-deploy' to /home/user/.config/comandi/commands.json
+Added 'my-deploy' to /home/user/.config/commands/commands.json
 ```
 
 ### One-liner flags
@@ -90,9 +112,17 @@ Added 'my-deploy' to /home/user/.config/comandi/commands.json
 ```bash
 commands add logs-api \
   --desc "Tail CloudWatch logs for the API service" \
+  --keyword logs_api \
   --tag aws \
   --env AWS_PROFILE=prod \
   --cmd "aws logs tail /aws/copilot/app/prod/api --follow"
+```
+
+After adding or changing keywords, refresh the shell functions:
+
+```bash
+eval "$(commands shell-init)"
+logs_api
 ```
 
 Multi-step:
@@ -125,6 +155,8 @@ commands list aws          # filter by keyword
 commands list --tag aws    # filter by tag
 commands show ssh-agent    # show details + script
 commands copy ssh-agent    # copy script to clipboard
+commands keywords ssh-agent --add comando1
+commands keywords ssh-agent --remove comando1
 commands remove ssh-agent  # delete a command
 commands edit ssh-agent    # open commands file in $EDITOR
 commands path              # show active commands file

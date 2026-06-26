@@ -4,6 +4,7 @@
     {
       "name": "test-cmd",
       "aliases": ["tc"],
+      "keywords": ["comando1"],
       "description": "A test command",
       "tags": ["test"],
       "steps": [{"run": "echo hello"}]
@@ -11,8 +12,30 @@
     {
       "name": "test-eval",
       "description": "A test eval command",
+      "keywords": ["use_test"],
       "mode": "eval",
       "steps": [{"run": "export TEST=1"}]
+    },
+    {
+      "name": "param-cmd",
+      "description": "A parameterized test command",
+      "params": [
+        {
+          "name": "env",
+          "default": "staging",
+          "choices": ["dev", "staging", "prod"]
+        },
+        {
+          "name": "service",
+          "required": true
+        },
+        {
+          "name": "token",
+          "required": false,
+          "secret": true
+        }
+      ],
+      "steps": [{"run": "echo {{env}} {{service}}"}]
     }
   ]
 }

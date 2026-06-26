@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "commands": [
+    {
+      "name": "bad-param",
+      "params": [
+        {
+          "name": "env",
+          "required": "yes"
+        }
+      ],
+      "steps": [{"run": "echo bad"}]
+    }
+  ]
+}
