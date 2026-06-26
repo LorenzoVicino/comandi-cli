@@ -50,9 +50,16 @@ If installed from a Git checkout:
 ```bash
 cd /path/to/commands-cli
 git pull
-pip install -e .
+PYTHON=python3.10  # or another Python 3.8+ executable
+$PYTHON -m pip install --user --upgrade "pip>=23" "setuptools>=64,<82"
+$PYTHON -m pip uninstall -y comandi-cli
+$PYTHON -m pip install -e .
 eval "$(commands shell-init)"
 ```
+
+The `comandi-cli` uninstall is only needed when upgrading from the old package
+name. It prevents the old installed `comandi` module from shadowing the editable
+checkout.
 
 If installed with `./install.sh`, update the checkout and run the installer again:
 
@@ -61,6 +68,15 @@ cd /path/to/commands-cli
 git pull
 ./install.sh
 eval "$(commands shell-init)"
+```
+
+If `pip install -e .` reports that the backend is missing `build_editable`,
+upgrade pip and setuptools first:
+
+```bash
+PYTHON=python3.10  # or another Python 3.8+ executable
+$PYTHON -m pip install --user --upgrade "pip>=23" "setuptools>=64,<82"
+$PYTHON -m pip install -e .
 ```
 
 ## Quick start
